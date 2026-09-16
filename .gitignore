@@ -1,7 +1,55 @@
-/Binaries/
-/DerivedDataCache/
-/Intermediate/
-/Saved/
-/Plugins/*/Intermediate/
-/Plugins/*/Binaries/
+# Unreal Engine project files to track
+*.uproject
+Content/
+Source/
+Config/
+
+# Ignore build artifacts
+Binaries/
+DerivedDataCache/
+Intermediate/
+Saved/
+Build/
+
+# Ignore packaged builds (your Windows/AVC folder)
+Windows/
+
+# Ignore Visual Studio
 .vs/
+*.VC.db
+*.VC.opendb
+
+# Ignore IDE junk
+*.suo
+*.user
+*.userprefs
+*.sln.docstates
+
+# Ignore OS junk
+.DS_Store
+Thumbs.db
+
+# Ignore crash logs
+Saved/Logs/
+Windows/**/Saved/
+Windows/**/CrashReportClient/
+
+# Ignore plugin build folders
+Plugins/*/Intermediate/
+Plugins/*/Binaries/
+
+# Ignore LFS-generated temp files
+*.tmp
+
+# Ignore auto-generated external actor folders (optional)
+Content/__ExternalActors__/
+
+# Ignore PAKs, UCAS, UTOC (packaged game files)
+*.pak
+*.ucas
+*.utoc
+
+# Ignore executable outputs
+*.exe
+*.dll
+*.pdb

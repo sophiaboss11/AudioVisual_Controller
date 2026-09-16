@@ -10,6 +10,6 @@
 class AVC_API MyClass
 {
 public:
-	MyClass();
-	~MyClass();
+MyClass();
+~MyClass();
 };
