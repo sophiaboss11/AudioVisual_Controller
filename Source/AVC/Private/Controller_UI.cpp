@@ -11,6 +11,10 @@
 #include "NiagaraDataChannelCommon.h"
 #include "NiagaraDataChannelAccessContext.h"
 #include "NiagaraDataChannel_GameplayBurst.h"
+#include "NiagaraComponent.h"
+#include "NiagaraSystem.h"
+
+#include "UObject/UObjectIterator.h"
 #include "Engine/Engine.h"
 #include "Engine/World.h"
 #include "GameFramework/Actor.h"
@@ -204,11 +208,51 @@ private:
 	bool bIsDrawing = false;
 };
 #include "Widgets/SBoxPanel.h"
+#include <NiagaraFunctionLibrary.h>
 
 BEGIN_SLATE_FUNCTION_BUILD_OPTIMIZATION
 void Controller_UI::Construct(const FArguments& InArgs)
 {
 	UE_LOG(LogTemp, Warning, TEXT("=== Controller_UI Construct called"));
+
+	// Create a dedicated actor with its own scene component to own the spawned particles.
+	UWorld* World = InArgs._World;
+	if (World && World->IsGameWorld())
+	{
+		CachedWorld = World;
+
+		FActorSpawnParameters SpawnParams;
+		SpawnParams.Name = MakeUniqueObjectName(World, AActor::StaticClass(), TEXT("AVC_ParticleOwner"));
+		SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+
+		if (AActor* NewOwner = World->SpawnActor<AActor>(AActor::StaticClass(), FTransform::Identity, SpawnParams))
+		{
+			USceneComponent* NewComponent = NewObject<USceneComponent>(NewOwner, TEXT("ParticleRoot"));
+			NewOwner->SetRootComponent(NewComponent);
+			NewComponent->RegisterComponent();
+			NewComponent->SetWorldLocation(ParticleLocation);
+			OwnerActor = NewOwner;
+			OwningComponent = NewComponent;
+
+			if (UNiagaraSystem* BlowingSystem = LoadObject<UNiagaraSystem>(nullptr, TEXT("/Game/avc_Particles/blowing_particles.blowing_particles")))
+			{
+				UNiagaraComponent* NiagaraComp = UNiagaraFunctionLibrary::SpawnSystemAttached(
+					BlowingSystem, NewComponent, NAME_None, FVector::ZeroVector, FRotator::ZeroRotator,
+					EAttachLocation::KeepRelativeOffset, false);
+				SetBlowingParticles(NiagaraComp);
+				UE_LOG(LogTemp, Warning, TEXT("Controller_UI - spawned blowing_particles: %s"), NiagaraComp ? *NiagaraComp->GetPathName() : TEXT("null"));
+			}
+			else
+			{
+				UE_LOG(LogTemp, Warning, TEXT("Controller_UI::Construct - failed to load blowing_particles system."));
+			}
+		}
+	}
+
+	if (!OwningComponent.IsValid())
+	{
+		UE_LOG(LogTemp, Warning, TEXT("Controller_UI::Construct - failed to create owning component."));
+	}
 
 	ChildSlot
 	[
@@ -238,6 +282,35 @@ void Controller_UI::Construct(const FArguments& InArgs)
 				.Value(this, &Controller_UI::GetDataChannelVal)
 				.OnValueChanged(this, &Controller_UI::SetDataChannelVal)
 				.OnValueCommitted_Lambda([this](float NewValue, ETextCommit::Type) { SetDataChannelVal(NewValue); })
+			]
+			+ SVerticalBox::Slot()
+			.AutoHeight()
+			.Padding(0.0f, 8.0f, 0.0f, 4.0f)
+			[
+				SNew(STextBlock)
+				.Text(FText::FromString(TEXT("Wind Speed")))
+			]
+			+ SVerticalBox::Slot()
+			.AutoHeight()
+			[
+				SNew(SHorizontalBox)
+				+ SHorizontalBox::Slot()
+				.FillWidth(1.0f)
+				.Padding(0.0f, 0.0f, 4.0f, 0.0f)
+				[
+					MakeWindSpeedAxisSpinBox(0)
+				]
+				+ SHorizontalBox::Slot()
+				.FillWidth(1.0f)
+				.Padding(0.0f, 0.0f, 4.0f, 0.0f)
+				[
+					MakeWindSpeedAxisSpinBox(1)
+				]
+				+ SHorizontalBox::Slot()
+				.FillWidth(1.0f)
+				[
+					MakeWindSpeedAxisSpinBox(2)
+				]
 			]
 		]
 		]
@@ -276,6 +349,31 @@ void Controller_UI::SetDataChannelVal(float NewValue)
 	}
 }
 
+TSharedRef<SWidget> Controller_UI::MakeWindSpeedAxisSpinBox(int32 Axis)
+{
+	return SNew(SSpinBox<float>)
+		.MinSliderValue(-100.0f)
+		.MaxSliderValue(100.0f)
+		.Delta(0.1f)
+		.Value_Lambda([this, Axis]() { return (float)myWindSpeed[Axis]; })
+		.OnValueChanged_Lambda([this, Axis](float NewValue)
+		{
+			myWindSpeed[Axis] = NewValue;
+			if (UWorld* World = CachedWorld.Get())
+			{
+				WriteAndReadDataChannel(World);
+			}
+		})
+		.OnValueCommitted_Lambda([this, Axis](float NewValue, ETextCommit::Type)
+		{
+			myWindSpeed[Axis] = NewValue;
+			if (UWorld* World = CachedWorld.Get())
+			{
+				WriteAndReadDataChannel(World);
+			}
+		});
+}
+
 void Controller_UI::WriteAndReadDataChannel(UWorld* World)
 {
 	// Only act on a valid game world; editor/preview worlds are ignored.
@@ -303,38 +401,16 @@ void Controller_UI::WriteAndReadDataChannel(UWorld* World)
 		return;
 	}
 
-	// Create a dedicated actor with its own scene component to own the spawned particles.
-	const FVector ParticleLocation(-9810.0, 7830.0, -14130.0);
-	USceneComponent* OwningComponent = nullptr;
-	if (AActor* Owner = OwnerActor.Get())
+	// Use the owning component created in Construct.
+	USceneComponent* Component = OwningComponent.Get();
+	if (!Component)
 	{
-		OwningComponent = Owner->GetRootComponent();
-	}
-	else
-	{
-		FActorSpawnParameters SpawnParams;
-		SpawnParams.Name = MakeUniqueObjectName(World, AActor::StaticClass(), TEXT("AVC_ParticleOwner"));
-		SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
-
-		AActor* NewOwner = World->SpawnActor<AActor>(AActor::StaticClass(), FTransform::Identity, SpawnParams);
-		if (NewOwner)
-		{
-			OwningComponent = NewObject<USceneComponent>(NewOwner, TEXT("ParticleRoot"));
-			NewOwner->SetRootComponent(OwningComponent);
-			OwningComponent->RegisterComponent();
-			OwningComponent->SetWorldLocation(ParticleLocation);
-			OwnerActor = NewOwner;
-		}
-	}
-
-	if (!OwningComponent)
-	{
-		UE_LOG(LogTemp, Warning, TEXT("Controller_UI::WriteAndReadDataChannel - failed to create owning component."));
+		UE_LOG(LogTemp, Warning, TEXT("Controller_UI::WriteAndReadDataChannel - no owning component (was a World passed to Construct?)."));
 		return;
 	}
 
 	FNDCAccessContext_GameplayBurst& BurstContext = AccessContext.GetChecked<FNDCAccessContext_GameplayBurst>();
-	BurstContext.OwningComponent = OwningComponent;
+	BurstContext.OwningComponent = Component;
 	BurstContext.bForceAttachToOwningComponent = true;
 	BurstContext.Location = ParticleLocation;
 	BurstContext.bOverrideLocation = false;
@@ -356,6 +432,8 @@ void Controller_UI::WriteAndReadDataChannel(UWorld* World)
 
 	// Overwrite DataChannelVal at index 0.
 	Writer->WriteFloat(TEXT("DataChannelVal"), 0, DataChannelVal);
+	Writer->WriteVector(TEXT("interactiveWindSpeed"), 0, myWindSpeed);
+	UE_LOG(LogTemp, Warning, TEXT("Controller_UI::WriteAndReadDataChannel - wrote interactiveWindSpeed = (%f, %f, %f)"), myWindSpeed.X, myWindSpeed.Y, myWindSpeed.Z);
 	UE_LOG(LogTemp, Warning, TEXT("Controller_UI::WriteAndReadDataChannel - wrote DataChannelVal = %f"), DataChannelVal);
 
 	// --- Read the value back from the updated data channel and print it ---

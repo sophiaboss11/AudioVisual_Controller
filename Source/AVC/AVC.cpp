@@ -11,6 +11,10 @@
 #include "Engine/GameViewportClient.h"
 #include "Engine/World.h"
 #include "GameFramework/PlayerController.h"
+#include "EngineUtils.h"
+#include "NiagaraComponent.h"
+#include "NiagaraSystem.h"
+#include "UObject/UObjectIterator.h"
 
 #if PLATFORM_WINDOWS
 #include "Windows/AllowWindowsPlatformTypes.h"
@@ -57,15 +61,29 @@ private:
 		{
 			return;
 		}
-
-		TSharedRef<Controller_UI> Core = SNew(Controller_UI);
+		TSharedRef<Controller_UI> Core = SNew(Controller_UI)
+			.World(Params.World);
 		ControllerWidget = Core;
+		TWeakPtr<Controller_UI> WeakCore = Core;
+		TWeakObjectPtr<UWorld> WeakWorld = Params.World;
+
+		// Find the Niagara component in this world that uses the "blowing_particles" system asset.
+		//for (TActorIterator<AActor> It(Params.World); It; ++It)
+		//{
+		//	AActor* Actor = *It;
+		//	if (Actor)
+		//	{
+		//		UE_LOG(LogTemp, Warning, TEXT("=== Actor: %s (Label: %s)"), *Actor->GetName(), *Actor->GetActorNameOrLabel());
+		//	}
+		//}
+
+
+
 
 		// Write to (and read back from) the Niagara data channel once BeginPlay has run
 		// (matching the blueprint's Event BeginPlay). Deferring to the next tick ensures
 		// actors have begun play and the data channel handlers are ready.
-		TWeakPtr<Controller_UI> WeakCore = Core;
-		TWeakObjectPtr<UWorld> WeakWorld = Params.World;
+
 		Params.World->GetTimerManager().SetTimerForNextTick([WeakCore, WeakWorld]()
 		{
 			TSharedPtr<Controller_UI> Pinned = WeakCore.Pin();
@@ -241,6 +259,7 @@ private:
 
 	TWeakPtr<SWindow> AVCWindow;
 	TWeakPtr<Controller_UI> ControllerWidget;
+	TWeakObjectPtr<UNiagaraComponent> BlowingParticlesComponent;
 	FDelegateHandle EngineInitHandle;
 	FDelegateHandle WorldInitHandle;
 };

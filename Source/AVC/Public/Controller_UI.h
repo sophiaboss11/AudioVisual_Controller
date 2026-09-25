@@ -5,6 +5,8 @@
 #include "CoreMinimal.h"
 #include "Widgets/SCompoundWidget.h"
 
+class UNiagaraComponent;
+
 /**
  * 
  */
@@ -12,7 +14,10 @@ class AVC_API Controller_UI : public SCompoundWidget
 {
 public:
 	SLATE_BEGIN_ARGS(Controller_UI)
+		: _World(nullptr)
 	{}
+		/** Game world in which the particle owning component is created. */
+		SLATE_ARGUMENT(UWorld*, World)
 	SLATE_END_ARGS()
 
 	/** Constructs this widget with InArgs */
@@ -30,6 +35,13 @@ public:
 
 	float GetDataChannelVal() const { return DataChannelVal; }
 
+	FVector GetWindSpeed() const { return myWindSpeed; }
+
+	/** Stores the Niagara component of the BlowingParticles actor. */
+	void SetBlowingParticles(UNiagaraComponent* InComp) { BlowingParticlesComponent = InComp; }
+
+	UNiagaraComponent* GetBlowingParticles() const { return BlowingParticlesComponent.Get(); }
+
 private:
 	/** Called by the mouse pad whenever the drawing position changes; stores and prints it in mousePadVal. */
 	void OnMousePadPositionChanged(const FVector2D& NewPosition);
@@ -40,9 +52,24 @@ private:
 	/** Value written to the DataChannelVal attribute of the data channel. */
 	float DataChannelVal = 10.0f;
 
+	/** Creates a spin box editing one axis (0 = X, 1 = Y, 2 = Z) of WindSpeed. */
+	TSharedRef<SWidget> MakeWindSpeedAxisSpinBox(int32 Axis);
+
+	/** Value written to the "Wind Speed" user parameter of the BlowingParticles system. */
+	FVector myWindSpeed = FVector(10.0, 0.0, 0.0);
+
 	/** World the data channel is written to; set by WriteAndReadDataChannel. */
 	TWeakObjectPtr<UWorld> CachedWorld;
 
 	/** Actor created at runtime whose root component owns the spawned particles. */
 	TWeakObjectPtr<AActor> OwnerActor;
+
+	/** Scene component (root of OwnerActor) that owns the spawned particles; created in Construct. */
+	TWeakObjectPtr<USceneComponent> OwningComponent;
+
+	/** Niagara component of the BlowingParticles actor in the level. */
+	TWeakObjectPtr<UNiagaraComponent> BlowingParticlesComponent;
+
+	/** World location of the particle owning component. */
+	const FVector ParticleLocation = FVector(-9810.0, 7830.0, -14130.0);
 };
