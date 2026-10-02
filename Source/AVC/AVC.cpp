@@ -67,31 +67,19 @@ private:
 		TWeakPtr<Controller_UI> WeakCore = Core;
 		TWeakObjectPtr<UWorld> WeakWorld = Params.World;
 
-		// Find the Niagara component in this world that uses the "blowing_particles" system asset.
-		//for (TActorIterator<AActor> It(Params.World); It; ++It)
-		//{
-		//	AActor* Actor = *It;
-		//	if (Actor)
-		//	{
-		//		UE_LOG(LogTemp, Warning, TEXT("=== Actor: %s (Label: %s)"), *Actor->GetName(), *Actor->GetActorNameOrLabel());
-		//	}
-		//}
-
-
-
-
 		// Write to (and read back from) the Niagara data channel once BeginPlay has run
 		// (matching the blueprint's Event BeginPlay). Deferring to the next tick ensures
 		// actors have begun play and the data channel handlers are ready.
 
-		Params.World->GetTimerManager().SetTimerForNextTick([WeakCore, WeakWorld]()
-		{
-			TSharedPtr<Controller_UI> Pinned = WeakCore.Pin();
-			if (Pinned.IsValid() && WeakWorld.IsValid())
-			{
-				Pinned->WriteAndReadDataChannel(WeakWorld.Get());
-			}
-		});
+		// Data channel disabled.
+		//Params.World->GetTimerManager().SetTimerForNextTick([WeakCore, WeakWorld]()
+		//{
+		//	TSharedPtr<Controller_UI> Pinned = WeakCore.Pin();
+		//	if (Pinned.IsValid() && WeakWorld.IsValid())
+		//	{
+		//		Pinned->WriteAndReadDataChannel(WeakWorld.Get());
+		//	}
+		//});
 
 		if (FSlateApplication::IsInitialized())
 		{

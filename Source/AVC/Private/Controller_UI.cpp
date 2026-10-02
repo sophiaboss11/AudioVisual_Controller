@@ -7,28 +7,29 @@
 #include "NiagaraDataChannelFunctionLibrary.h"
 #include "NiagaraDataChannelAccessor.h"
 #include "NiagaraDataChannelAsset.h"
-#include "NiagaraDataChannelPublic.h"
-#include "NiagaraDataChannelCommon.h"
+//#include "NiagaraDataChannelPublic.h"
+//#include "NiagaraDataChannelCommon.h"
 #include "NiagaraDataChannelAccessContext.h"
 #include "NiagaraDataChannel_GameplayBurst.h"
 #include "NiagaraComponent.h"
 #include "NiagaraSystem.h"
 
-#include "UObject/UObjectIterator.h"
+//#include "UObject/UObjectIterator.h"
 #include "Engine/Engine.h"
 #include "Engine/World.h"
 #include "GameFramework/Actor.h"
 #include "Components/SceneComponent.h"
 #include "Widgets/Input/SSpinBox.h"
+#include "Widgets/Input/SButton.h"
 #include "Widgets/Text/STextBlock.h"
 #include "Widgets/Layout/SBox.h"
-#include "Widgets/Layout/SBorder.h"
+//#include "Widgets/Layout/SBorder.h"
 #include "Styling/CoreStyle.h"
 #include "Widgets/SLeafWidget.h"
 #include "Rendering/DrawElements.h"
 #include "Framework/Application/SlateApplication.h"
 
-DECLARE_DELEGATE_OneParam(FOnMousePadPositionChanged, const FVector2D&);
+DECLARE_DELEGATE_TwoParams(FOnMousePadPositionChanged, const FVector2D& /*LocalPosition*/, const FVector2D& /*NormalizedPosition*/);
 
 /** Drawable pad: tracks the mouse while the left button is held and draws the strokes. */
 class SMousePad : public SLeafWidget
@@ -108,9 +109,29 @@ public:
 			AllottedGeometry.ToPaintGeometry(InnerSize, FSlateLayoutTransform(FVector2D(BorderThickness, BorderThickness))),
 			WhiteBrush, ESlateDrawEffect::None, FLinearColor::Black);
 
-		const double Now = FSlateApplication::Get().GetCurrentTime();
 		TArray<FVector2D> Segment;
 		Segment.SetNum(2);
+
+		// Dotted center lines (vertical along the width center, horizontal along the height center).
+		const FLinearColor GuideColor(0.35f, 0.35f, 0.35f, 1.0f);
+		const double CenterX = Size.X * 0.5;
+		const double CenterY = Size.Y * 0.5;
+		for (double Y = BorderThickness; Y < Size.Y - BorderThickness; Y += DashLength + DashGap)
+		{
+			Segment[0] = FVector2D(CenterX, Y);
+			Segment[1] = FVector2D(CenterX, FMath::Min(Y + DashLength, Size.Y - BorderThickness));
+			FSlateDrawElement::MakeLines(OutDrawElements, LayerId + 2, AllottedGeometry.ToPaintGeometry(),
+				Segment, ESlateDrawEffect::None, GuideColor, false, 1.0f);
+		}
+		for (double X = BorderThickness; X < Size.X - BorderThickness; X += DashLength + DashGap)
+		{
+			Segment[0] = FVector2D(X, CenterY);
+			Segment[1] = FVector2D(FMath::Min(X + DashLength, Size.X - BorderThickness), CenterY);
+			FSlateDrawElement::MakeLines(OutDrawElements, LayerId + 2, AllottedGeometry.ToPaintGeometry(),
+				Segment, ESlateDrawEffect::None, GuideColor, false, 1.0f);
+		}
+
+		const double Now = FSlateApplication::Get().GetCurrentTime();
 
 		for (const TArray<FPadPoint>& Stroke : Strokes)
 		{
@@ -144,6 +165,8 @@ private:
 	/** How long it then takes to fade from white to black, in seconds. */
 	static constexpr double FadeDuration = 1.0;
 	static constexpr double BorderThickness = 1.0;
+	static constexpr double DashLength = 4.0;
+	static constexpr double DashGap = 4.0;
 
 	static float GetBrightness(double Age)
 	{
@@ -178,6 +201,11 @@ private:
 
 		Invalidate(EInvalidateWidgetReason::Paint);
 
+		if (bIsDrawing)
+		{
+			OnPositionChanged.ExecuteIfBound(LastLocal, LastNormalized);
+		}
+
 		if (Strokes.Num() == 0 && !bIsDrawing)
 		{
 			FadeTimerHandle.Reset();
@@ -192,6 +220,12 @@ private:
 		Local.X = FMath::Clamp(Local.X, 0.0, (double)Size.X);
 		Local.Y = FMath::Clamp(Local.Y, 0.0, (double)Size.Y);
 
+		const FVector2D Normalized(
+			Size.X > 0.0 ? Local.X / Size.X : 0.0,
+			Size.Y > 0.0 ? Local.Y / Size.Y : 0.0);
+		LastLocal = Local;
+		LastNormalized = Normalized;
+
 		TArray<FPadPoint>& Stroke = Strokes.Last();
 		if (Stroke.Num() > 0 && Stroke.Last().Position.Equals(Local))
 		{
@@ -199,12 +233,14 @@ private:
 		}
 
 		Stroke.Add({ Local, FSlateApplication::Get().GetCurrentTime() });
-		OnPositionChanged.ExecuteIfBound(Local);
+		OnPositionChanged.ExecuteIfBound(Local, Normalized);
 	}
 
 	FOnMousePadPositionChanged OnPositionChanged;
 	TArray<TArray<FPadPoint>> Strokes;
 	TSharedPtr<FActiveTimerHandle> FadeTimerHandle;
+	FVector2D LastLocal = FVector2D::ZeroVector;
+	FVector2D LastNormalized = FVector2D::ZeroVector;
 	bool bIsDrawing = false;
 };
 #include "Widgets/SBoxPanel.h"
@@ -215,7 +251,7 @@ void Controller_UI::Construct(const FArguments& InArgs)
 {
 	UE_LOG(LogTemp, Warning, TEXT("=== Controller_UI Construct called"));
 
-	// Create a dedicated actor with its own scene component to own the spawned particles.
+	// Create a dedicated actor with its own scene component to owner the spawned particles.
 	UWorld* World = InArgs._World;
 	if (World && World->IsGameWorld())
 	{
@@ -233,6 +269,8 @@ void Controller_UI::Construct(const FArguments& InArgs)
 			NewComponent->SetWorldLocation(ParticleLocation);
 			OwnerActor = NewOwner;
 			OwningComponent = NewComponent;
+
+			//spawn system
 
 			if (UNiagaraSystem* BlowingSystem = LoadObject<UNiagaraSystem>(nullptr, TEXT("/Game/avc_Particles/blowing_particles.blowing_particles")))
 			{
@@ -279,40 +317,38 @@ void Controller_UI::Construct(const FArguments& InArgs)
 				.MinSliderValue(0.0f)
 				.MaxSliderValue(100.0f)
 				.Delta(0.1f)
-				.Value(this, &Controller_UI::GetDataChannelVal)
-				.OnValueChanged(this, &Controller_UI::SetDataChannelVal)
-				.OnValueCommitted_Lambda([this](float NewValue, ETextCommit::Type) { SetDataChannelVal(NewValue); })
-			]
-			+ SVerticalBox::Slot()
-			.AutoHeight()
-			.Padding(0.0f, 8.0f, 0.0f, 4.0f)
-			[
-				SNew(STextBlock)
-				.Text(FText::FromString(TEXT("Wind Speed")))
-			]
-			+ SVerticalBox::Slot()
-			.AutoHeight()
-			[
-				SNew(SHorizontalBox)
-				+ SHorizontalBox::Slot()
-				.FillWidth(1.0f)
-				.Padding(0.0f, 0.0f, 4.0f, 0.0f)
-				[
-					MakeWindSpeedAxisSpinBox(0)
-				]
-				+ SHorizontalBox::Slot()
-				.FillWidth(1.0f)
-				.Padding(0.0f, 0.0f, 4.0f, 0.0f)
-				[
-					MakeWindSpeedAxisSpinBox(1)
-				]
-				+ SHorizontalBox::Slot()
-				.FillWidth(1.0f)
-				[
-					MakeWindSpeedAxisSpinBox(2)
-				]
+				//.Value(this, &Controller_UI::GetDataChannelVal)
+				//.OnValueChanged(this, &Controller_UI::SetDataChannelVal)
+				//.OnValueCommitted_Lambda([this](float NewValue, ETextCommit::Type) { SetDataChannelVal(NewValue); })
 			]
 		]
+		]
+		// Wind button above the mouse pad
+		+ SVerticalBox::Slot()
+		.AutoHeight()
+		.Padding(10.0f, 0.0f, 10.0f, 0.0f)
+		[
+			SNew(SHorizontalBox)
+			+ SHorizontalBox::Slot()
+			.AutoWidth()
+			.VAlign(VAlign_Center)
+			[
+				SNew(SButton)
+				.HAlign(HAlign_Center)
+				.Text(FText::FromString(TEXT("Wind")))
+				.OnClicked_Lambda([]() { return FReply::Handled(); })
+			]
+			+ SHorizontalBox::Slot()
+			.FillWidth(1.0f)
+			.VAlign(VAlign_Center)
+			.Padding(8.0f, 0.0f, 0.0f, 0.0f)
+			[
+				SNew(STextBlock)
+				.Text_Lambda([this]()
+				{
+					return FText::FromString(FString::Printf(TEXT("(%.1f, %.1f)"), mousePadVal.X, mousePadVal.Y));
+				})
+			]
 		]
 		// Lower half: mouse input pad
 		+ SVerticalBox::Slot()
@@ -327,54 +363,40 @@ void Controller_UI::Construct(const FArguments& InArgs)
 }
 END_SLATE_FUNCTION_BUILD_OPTIMIZATION
 
-void Controller_UI::OnMousePadPositionChanged(const FVector2D& NewPosition)
+void Controller_UI::OnMousePadPositionChanged(const FVector2D& NewPosition, const FVector2D& NormalizedPosition)
 {
 	mousePadVal = NewPosition;
 
-	UE_LOG(LogTemp, Warning, TEXT("Controller_UI - mousePadVal = (%f, %f)"), mousePadVal.X, mousePadVal.Y);
-	if (GEngine)
+	// Map pad to wind: left -> right = Y 1000..-1000, bottom -> top = Z -1000..1000 (center is 0).
+	myWindSpeed.Y = FMath::Lerp(MaxPadWindSpeed, -MaxPadWindSpeed, NormalizedPosition.X);
+	myWindSpeed.Z = FMath::Lerp(MaxPadWindSpeed, -MaxPadWindSpeed, NormalizedPosition.Y);
+
+	// Push the wind directly to the BlowingParticles "Wind Speed" user parameter.
+	if (UNiagaraComponent* NiagaraComp = GetBlowingParticles())
 	{
-		// Fixed key so the on-screen message updates in place instead of stacking.
-		GEngine->AddOnScreenDebugMessage(1001, 2.0f, FColor::Cyan,
-			FString::Printf(TEXT("mousePadVal = (%.1f, %.1f)"), mousePadVal.X, mousePadVal.Y));
+		NiagaraComp->SetVariableVec3(TEXT("Wind Speed"), myWindSpeed);
 	}
+
+	// Data channel disabled; wind is driven by the "Wind Speed" user parameter above.
+	//if (UWorld* World = CachedWorld.Get())
+	//{
+	//	WriteAndReadDataChannel(World, /*bWriteDataChannelVal*/ false, /*bWriteWindSpeed*/ true);
+	//}
+
+	UE_LOG(LogTemp, Warning, TEXT("Controller_UI - mousePadVal = (%f, %f)"), mousePadVal.X, mousePadVal.Y);
 }
 
 void Controller_UI::SetDataChannelVal(float NewValue)
 {
-	DataChannelVal = NewValue;
-	if (UWorld* World = CachedWorld.Get())
-	{
-		WriteAndReadDataChannel(World);
-	}
+	//DataChannelVal = NewValue;
+	// Data channel disabled.
+	//if (UWorld* World = CachedWorld.Get())
+	//{
+	//	WriteAndReadDataChannel(World, /*bWriteDataChannelVal*/ true, /*bWriteWindSpeed*/ false);
+	//}
 }
 
-TSharedRef<SWidget> Controller_UI::MakeWindSpeedAxisSpinBox(int32 Axis)
-{
-	return SNew(SSpinBox<float>)
-		.MinSliderValue(-100.0f)
-		.MaxSliderValue(100.0f)
-		.Delta(0.1f)
-		.Value_Lambda([this, Axis]() { return (float)myWindSpeed[Axis]; })
-		.OnValueChanged_Lambda([this, Axis](float NewValue)
-		{
-			myWindSpeed[Axis] = NewValue;
-			if (UWorld* World = CachedWorld.Get())
-			{
-				WriteAndReadDataChannel(World);
-			}
-		})
-		.OnValueCommitted_Lambda([this, Axis](float NewValue, ETextCommit::Type)
-		{
-			myWindSpeed[Axis] = NewValue;
-			if (UWorld* World = CachedWorld.Get())
-			{
-				WriteAndReadDataChannel(World);
-			}
-		});
-}
-
-void Controller_UI::WriteAndReadDataChannel(UWorld* World)
+void Controller_UI::WriteAndReadDataChannel(UWorld* World, bool bWriteDataChannelVal, bool bWriteWindSpeed)
 {
 	// Only act on a valid game world; editor/preview worlds are ignored.
 	if (!World || !World->IsGameWorld())
@@ -431,10 +453,11 @@ void Controller_UI::WriteAndReadDataChannel(UWorld* World)
 	}
 
 	// Overwrite DataChannelVal at index 0.
+	// Always write both attributes so each burst element is complete.
 	Writer->WriteFloat(TEXT("DataChannelVal"), 0, DataChannelVal);
 	Writer->WriteVector(TEXT("interactiveWindSpeed"), 0, myWindSpeed);
-	UE_LOG(LogTemp, Warning, TEXT("Controller_UI::WriteAndReadDataChannel - wrote interactiveWindSpeed = (%f, %f, %f)"), myWindSpeed.X, myWindSpeed.Y, myWindSpeed.Z);
-	UE_LOG(LogTemp, Warning, TEXT("Controller_UI::WriteAndReadDataChannel - wrote DataChannelVal = %f"), DataChannelVal);
+	UE_LOG(LogTemp, Warning, TEXT("Controller_UI::WriteAndReadDataChannel - wrote DataChannelVal = %f, interactiveWindSpeed = (%f, %f, %f)"),
+		DataChannelVal, myWindSpeed.X, myWindSpeed.Y, myWindSpeed.Z);
 
 	// --- Read the value back from the updated data channel and print it ---
 	UNiagaraDataChannelReader* Reader = UNiagaraDataChannelLibrary::ReadFromNiagaraDataChannel_WithContext(

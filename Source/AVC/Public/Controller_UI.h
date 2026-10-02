@@ -28,7 +28,7 @@ public:
 	 * then reads the value back from the channel and prints it.
 	 * Requires a valid game world.
 	 */
-	void WriteAndReadDataChannel(UWorld* World);
+	void WriteAndReadDataChannel(UWorld* World, bool bWriteDataChannelVal = true, bool bWriteWindSpeed = true);
 
 	/** Sets DataChannelVal and immediately writes it to the data channel. */
 	void SetDataChannelVal(float NewValue);
@@ -44,16 +44,16 @@ public:
 
 private:
 	/** Called by the mouse pad whenever the drawing position changes; stores and prints it in mousePadVal. */
-	void OnMousePadPositionChanged(const FVector2D& NewPosition);
+	void OnMousePadPositionChanged(const FVector2D& NewPosition, const FVector2D& NormalizedPosition);
+
+	/** Wind speed magnitude at the edges of the mouse pad (Y and Z axes). */
+	static constexpr double MaxPadWindSpeed = 1000.0;
 
 	/** Width (X) and height (Y) location of the last click on the mouse pad, in pad-local pixels. */
 	FVector2D mousePadVal = FVector2D::ZeroVector;
 
 	/** Value written to the DataChannelVal attribute of the data channel. */
 	float DataChannelVal = 10.0f;
-
-	/** Creates a spin box editing one axis (0 = X, 1 = Y, 2 = Z) of WindSpeed. */
-	TSharedRef<SWidget> MakeWindSpeedAxisSpinBox(int32 Axis);
 
 	/** Value written to the "Wind Speed" user parameter of the BlowingParticles system. */
 	FVector myWindSpeed = FVector(10.0, 0.0, 0.0);
