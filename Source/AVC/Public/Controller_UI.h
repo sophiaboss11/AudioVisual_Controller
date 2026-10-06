@@ -7,6 +7,27 @@
 
 class UNiagaraComponent;
 
+/** AVC color palette. */
+class AVC_API FAVCColors
+{
+public:
+	static constexpr const TCHAR* Label = TEXT("AVC");
+
+	static inline const FColor Background = FColor(0x08, 0x08, 0x10);
+	static inline const FColor Card       = FColor(0x0F, 0x0F, 0x1A);
+	static inline const FColor Border     = FColor(0x1E, 0x1E, 0x32);
+
+	static inline const FColor Foreground = FColor(0xE8, 0xE8, 0xF0);
+	static inline const FColor Dim        = FColor(0x98, 0x98, 0xC8);
+	static inline const FColor Dimmer     = FColor(0x5A, 0x5A, 0x90);
+
+	static inline const FColor Cyan       = FColor(0x00, 0xD0, 0xFF);
+	static inline const FColor Blue       = FColor(0x40, 0x60, 0xF0);
+	static inline const FColor Purple     = FColor(0x70, 0x30, 0xF0);
+	static inline const FColor Fuchsia    = FColor(0xE0, 0x18, 0xC8);
+	static inline const FColor Green      = FColor(0x00, 0xFF, 0x88);
+};
+
 /**
  * 
  */
@@ -43,6 +64,39 @@ public:
 	UNiagaraComponent* GetBlowingParticles() const { return BlowingParticlesComponent.Get(); }
 
 private:
+	/** Builds the effect type tab bar (Particle, Fluid, Rigid Body, Volumetric, Pyro). */
+	TSharedRef<SWidget> BuildEffectTabs();
+
+	/** Index of the selected effect tab; 0 = Particle. */
+	int32 SelectedEffectTab = 0;
+
+	/** Builds the overlay trigger buttons (Flash, Strobe, Blackout, Freeze). */
+	TSharedRef<SWidget> BuildOverlayTriggers();
+
+	/** Toggle state of each overlay trigger button. */
+	bool OverlayTriggerSelected[4] = { false, false, false, false };
+
+	/** Overlay color toggle: false = White, true = Black. */
+	bool bOverlayBlack = false;
+
+	/** Time the Flash trigger was last clicked; its outline highlights briefly afterwards. */
+	double FlashTriggerTime = -1000.0;
+
+	/** Number box value next to the text overlay (0.1 - 4). */
+	float OverlayValue = 1.0f;
+
+	/** Time the Overlay button was last clicked; drives its white flash. */
+	double OverlayFlashStartTime = -1000.0;
+
+	/** Text typed into the text overlay box. */
+	FString OverlayText;
+
+	/** Builds the 3x2 grid of effect sliders. */
+	TSharedRef<SWidget> BuildEffectSliders();
+
+	/** Normalized (0..1) values of the effect sliders. */
+	float EffectSliderValues[6] = { 0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f };
+
 	/** Called by the mouse pad whenever the drawing position changes; stores and prints it in mousePadVal. */
 	void OnMousePadPositionChanged(const FVector2D& NewPosition, const FVector2D& NormalizedPosition);
 
