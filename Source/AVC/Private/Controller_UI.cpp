@@ -1,7 +1,9 @@
-// Fill out your copyright notice in the Description page of Project Settings.
+﻿// Fill out your copyright notice in the Description page of Project Settings.
 
 
 #include "Controller_UI.h"
+#include "Scene_Widget.h"
+#include "IO_Widget.h"
 #include "SlateOptMacros.h"
 
 #include "NiagaraDataChannelFunctionLibrary.h"
@@ -26,11 +28,55 @@
 #include "Widgets/Layout/SBox.h"
 #include "Widgets/Layout/SBorder.h"
 #include "Widgets/Layout/SGridPanel.h"
+#include "Widgets/Layout/SSplitter.h"
+#include "Brushes/SlateColorBrush.h"
 #include "Brushes/SlateRoundedBoxBrush.h"
 #include "Styling/CoreStyle.h"
 #include "Widgets/SLeafWidget.h"
 #include "Rendering/DrawElements.h"
+#include "Rendering/SlateRenderer.h"
 #include "Framework/Application/SlateApplication.h"
+#include "Misc/Paths.h"
+
+FSlateFontInfo FAVCFonts::Get(int32 Size)
+{
+	static const FString FontPath = FPaths::ProjectContentDir() / TEXT("JetBrainsMono-VariableFont_wght.ttf");
+	return FSlateFontInfo(FontPath, Size);
+}
+
+namespace
+{
+	/** Small, letter-spaced font used for section labels, tabs and buttons. */
+	FSlateFontInfo AVCLabelFont(int32 Size = 8)
+	{
+		FSlateFontInfo Font = FAVCFonts::Get(Size);
+		Font.LetterSpacing = 200;
+		return Font;
+	}
+
+	/** Splitter style: 1px Border-colored handle that brightens on hover/drag. */
+	const FSplitterStyle& AVCSplitterStyle()
+	{
+		static const FSplitterStyle Style = FSplitterStyle()
+			.SetHandleNormalBrush(FSlateColorBrush(FLinearColor(FAVCColors::Border)))
+			.SetHandleHighlightBrush(FSlateColorBrush(FLinearColor(FAVCColors::Dimmer)));
+		return Style;
+	}
+
+	/** 1px line in the Border color separating panels and sections. */
+	TSharedRef<SWidget> AVCDivider(bool bVertical)
+	{
+		return SNew(SBox)
+			.WidthOverride(bVertical ? 1.0f : FOptionalSize())
+			.HeightOverride(bVertical ? FOptionalSize() : 1.0f)
+			[
+				SNew(SBorder)
+				.BorderImage(FCoreStyle::Get().GetBrush("WhiteBrush"))
+				.BorderBackgroundColor(FLinearColor(FAVCColors::Border))
+				.Padding(0.0f)
+			];
+	}
+}
 
 DECLARE_DELEGATE_TwoParams(FOnMousePadPositionChanged, const FVector2D& /*LocalPosition*/, const FVector2D& /*NormalizedPosition*/);
 
@@ -140,15 +186,157 @@ private:
 		OnValueChanged.ExecuteIfBound(Value);
 	}
 
-	static constexpr double HandleSize = 9.0;
-	static constexpr double TrackHeight = 2.0;
-	static constexpr double GlowRadius = 3.0;
+	static constexpr double HandleSize = 12.0;
+	static constexpr double TrackHeight = 3.0;
+	static constexpr double GlowRadius = 4.0;
 	static constexpr int32 GlowRings = 4;
 
 	FLinearColor FillColor;
 	float Value = 0.5f;
 	bool bDragging = false;
 	FOnFloatValueChanged OnValueChanged;
+};
+
+/** Rectangular color field: hue left to right, white at the top through the pure hue in the middle to black at the bottom. */
+class SAVCColorPicker : public SLeafWidget
+{
+public:
+	SLATE_BEGIN_ARGS(SAVCColorPicker)
+		: _InitialColor(FLinearColor::White)
+	{}
+		SLATE_ARGUMENT(FLinearColor, InitialColor)
+		SLATE_EVENT(FOnLinearColorValueChanged, OnColorChanged)
+	SLATE_END_ARGS()
+
+	void Construct(const FArguments& InArgs)
+	{
+		const FLinearColor HSV = InArgs._InitialColor.LinearRGBToHSV();
+		HueU = HSV.R / 360.0f;
+		// White -> hue occupies the top half, hue -> black the bottom half.
+		LightV = FMath::Clamp(HSV.B < 1.0f ? 0.5f + (1.0f - HSV.B) * 0.5f : HSV.G * 0.5f, 0.0f, 1.0f);
+		OnColorChanged = InArgs._OnColorChanged;
+	}
+
+	virtual FVector2D ComputeDesiredSize(float) const override
+	{
+		return FVector2D(120.0f, 120.0f);
+	}
+
+	virtual FReply OnMouseButtonDown(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent) override
+	{
+		if (MouseEvent.GetEffectingButton() != EKeys::LeftMouseButton)
+		{
+			return FReply::Unhandled();
+		}
+		bDragging = true;
+		UpdateColor(MyGeometry, MouseEvent);
+		return FReply::Handled().CaptureMouse(SharedThis(this));
+	}
+
+	virtual FReply OnMouseMove(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent) override
+	{
+		if (!bDragging)
+		{
+			return FReply::Unhandled();
+		}
+		UpdateColor(MyGeometry, MouseEvent);
+		return FReply::Handled();
+	}
+
+	virtual FReply OnMouseButtonUp(const FGeometry&, const FPointerEvent& MouseEvent) override
+	{
+		if (!bDragging || MouseEvent.GetEffectingButton() != EKeys::LeftMouseButton)
+		{
+			return FReply::Unhandled();
+		}
+		bDragging = false;
+		return FReply::Handled().ReleaseMouseCapture();
+	}
+
+	virtual void OnMouseCaptureLost(const FCaptureLostEvent&) override
+	{
+		bDragging = false;
+	}
+
+	virtual int32 OnPaint(const FPaintArgs&, const FGeometry& AllottedGeometry, const FSlateRect&,
+		FSlateWindowElementList& OutDrawElements, int32 LayerId, const FWidgetStyle&, bool) const override
+	{
+		const FSlateBrush* WhiteBrush = FCoreStyle::Get().GetBrush("WhiteBrush");
+		const FVector2D Size = AllottedGeometry.GetLocalSize();
+		if (Size.X <= 0.0 || Size.Y <= 0.0)
+		{
+			return LayerId;
+		}
+
+		// Grid of (NumSegments + 1) columns x 3 rows: white, pure hue, black.
+		const FSlateRenderTransform& Transform = AllottedGeometry.GetAccumulatedRenderTransform();
+		TArray<FSlateVertex> Vertices;
+		TArray<SlateIndex> Indices;
+		Vertices.Reserve((NumSegments + 1) * 3);
+		Indices.Reserve(NumSegments * 12);
+
+		for (int32 Column = 0; Column <= NumSegments; ++Column)
+		{
+			const float U = (float)Column / NumSegments;
+			const FColor HueColor = FLinearColor(U * 360.0f, 1.0f, 1.0f).HSVToLinearRGB().ToFColor(true);
+			const FColor RowColors[3] = { FColor::White, HueColor, FColor::Black };
+			for (int32 Row = 0; Row < 3; ++Row)
+			{
+				const FVector2D Pos(Size.X * U, Size.Y * Row * 0.5);
+				Vertices.Add(FSlateVertex::Make<ESlateVertexRounding::Disabled>(Transform, FVector2f(Pos), FVector2f(0.5f, 0.5f), RowColors[Row]));
+			}
+			if (Column > 0)
+			{
+				const SlateIndex Prev = (SlateIndex)((Column - 1) * 3);
+				const SlateIndex Curr = (SlateIndex)(Column * 3);
+				for (SlateIndex Row = 0; Row < 2; ++Row)
+				{
+					Indices.Add(Prev + Row); Indices.Add(Curr + Row); Indices.Add(Curr + Row + 1);
+					Indices.Add(Prev + Row); Indices.Add(Curr + Row + 1); Indices.Add(Prev + Row + 1);
+				}
+			}
+		}
+
+		const FSlateResourceHandle Handle = FSlateApplication::Get().GetRenderer()->GetResourceHandle(*WhiteBrush);
+		FSlateDrawElement::MakeCustomVerts(OutDrawElements, LayerId, Handle, Vertices, Indices, nullptr, 0, 0);
+
+		// Selection marker
+		const FVector2D MarkerCenter(Size.X * HueU, Size.Y * LightV);
+		const FSlateRoundedBoxBrush MarkerBrush(GetColor(), MarkerSize * 0.5, FLinearColor(FAVCColors::Background), 2.0f);
+		FSlateDrawElement::MakeBox(OutDrawElements, LayerId + 1,
+			AllottedGeometry.ToPaintGeometry(FVector2D(MarkerSize, MarkerSize), FSlateLayoutTransform(MarkerCenter - FVector2D(MarkerSize, MarkerSize) * 0.5)),
+			&MarkerBrush, ESlateDrawEffect::None, FLinearColor::White);
+
+		return LayerId + 1;
+	}
+
+	FLinearColor GetColor() const
+	{
+		const FLinearColor HueColor = FLinearColor(HueU * 360.0f, 1.0f, 1.0f).HSVToLinearRGB();
+		return LightV <= 0.5f
+			? FMath::Lerp(FLinearColor::White, HueColor, LightV * 2.0f)
+			: FMath::Lerp(HueColor, FLinearColor::Black, (LightV - 0.5f) * 2.0f);
+	}
+
+private:
+	void UpdateColor(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent)
+	{
+		const FVector2D Size = MyGeometry.GetLocalSize();
+		const FVector2D Local = MyGeometry.AbsoluteToLocal(MouseEvent.GetScreenSpacePosition());
+		HueU = (float)FMath::Clamp(Size.X > 0.0 ? Local.X / Size.X : 0.0, 0.0, 1.0);
+		LightV = (float)FMath::Clamp(Size.Y > 0.0 ? Local.Y / Size.Y : 0.0, 0.0, 1.0);
+		OnColorChanged.ExecuteIfBound(GetColor());
+	}
+
+	static constexpr int32 NumSegments = 72;
+	static constexpr double MarkerSize = 10.0;
+
+	/** Horizontal position (0..1) = hue. */
+	float HueU = 0.0f;
+	/** Vertical position (0..1): 0 = white, 0.5 = pure hue, 1 = black. */
+	float LightV = 0.0f;
+	bool bDragging = false;
+	FOnLinearColorValueChanged OnColorChanged;
 };
 
 /** Drawable pad: tracks the mouse while the left button is held and draws the strokes. */
@@ -220,9 +408,9 @@ public:
 		const FSlateBrush* WhiteBrush = FCoreStyle::Get().GetBrush("WhiteBrush");
 		const FVector2D Size = AllottedGeometry.GetLocalSize();
 
-		// White border, then black fill inset by the border thickness.
+		// Dim border, then background fill inset by the border thickness.
 		FSlateDrawElement::MakeBox(OutDrawElements, LayerId, AllottedGeometry.ToPaintGeometry(),
-			WhiteBrush, ESlateDrawEffect::None, FLinearColor::White);
+			WhiteBrush, ESlateDrawEffect::None, FLinearColor(FAVCColors::Border));
 
 		const FVector2D InnerSize(FMath::Max(0.0, Size.X - 2.0 * BorderThickness), FMath::Max(0.0, Size.Y - 2.0 * BorderThickness));
 		FSlateDrawElement::MakeBox(OutDrawElements, LayerId + 1,
@@ -233,7 +421,7 @@ public:
 		Segment.SetNum(2);
 
 		// Dotted center lines (vertical along the width center, horizontal along the height center).
-		const FLinearColor GuideColor(0.35f, 0.35f, 0.35f, 1.0f);
+		const FLinearColor GuideColor(FAVCColors::Border);
 		const double CenterX = Size.X * 0.5;
 		const double CenterY = Size.Y * 0.5;
 		for (double Y = BorderThickness; Y < Size.Y - BorderThickness; Y += DashLength + DashGap)
@@ -266,7 +454,7 @@ public:
 				Segment[0] = Stroke[Index - 1].Position;
 				Segment[1] = Stroke[Index].Position;
 				FSlateDrawElement::MakeLines(OutDrawElements, LayerId + 2, AllottedGeometry.ToPaintGeometry(),
-					Segment, ESlateDrawEffect::None, FLinearColor(Brightness, Brightness, Brightness, 1.0f), true, 2.0f);
+					Segment, ESlateDrawEffect::None, FLinearColor(FAVCColors::Cyan).CopyWithNewOpacity(Brightness), true, 2.0f);
 			}
 		}
 
@@ -418,27 +606,44 @@ void Controller_UI::Construct(const FArguments& InArgs)
 		.BorderImage(FCoreStyle::Get().GetBrush("WhiteBrush"))
 		.BorderBackgroundColor(FLinearColor(FAVCColors::Background))
 		// Default color for all text in the UI (text inherits the foreground color).
-		.ForegroundColor(FLinearColor(FAVCColors::Foreground))
+		.ForegroundColor(FLinearColor(FAVCColors::Dim))
 		.Padding(0.0f)
 		[
-		SNew(SHorizontalBox)
+		// Resizable columns; the splitter handles double as the 1px column dividers.
+		SNew(SSplitter)
+		.Orientation(Orient_Horizontal)
+		.Style(&AVCSplitterStyle())
+		.PhysicalSplitterHandleSize(1.0f)
+		.HitDetectionSplitterHandleSize(8.0f)
 		// Left column: first quarter of the window width
-		+ SHorizontalBox::Slot()
-		.FillWidth(1.0f)
-		.Padding(10.0f)
+		+ SSplitter::Slot()
+		.Value(1.0f)
 		[
 			SNew(SVerticalBox)
 			+ SVerticalBox::Slot()
 			.AutoHeight()
+			.Padding(18.0f, 16.0f, 18.0f, 12.0f)
 			[
 				SNew(STextBlock)
+				.Font(AVCLabelFont())
+				.TransformPolicy(ETextTransformPolicy::ToUpper)
 				.Text(FText::FromString(TEXT("Scenes")))
-				.ColorAndOpacity(FLinearColor(FAVCColors::Foreground))
+				.ColorAndOpacity(FLinearColor(FAVCColors::Dim))
+			]
+			+ SVerticalBox::Slot()
+			.AutoHeight()
+			[
+				AVCDivider(false)
+			]
+			+ SVerticalBox::Slot()
+			.FillHeight(1.0f)
+			[
+				SNew(Scene_Widget)
 			]
 		]
 		// Middle: existing controls
-		+ SHorizontalBox::Slot()
-		.FillWidth(2.0f)
+		+ SSplitter::Slot()
+		.Value(2.0f)
 		[
 		SNew(SVerticalBox)
 		// Effect controls: top four fifths of the window height
@@ -448,27 +653,34 @@ void Controller_UI::Construct(const FArguments& InArgs)
 		SNew(SVerticalBox)
 		+ SVerticalBox::Slot()
 		.AutoHeight()
-		.Padding(10.0f, 10.0f, 10.0f, 0.0f)
+		.Padding(14.0f, 16.0f, 14.0f, 0.0f)
 		[
 			SNew(STextBlock)
+			.Font(AVCLabelFont())
+			.TransformPolicy(ETextTransformPolicy::ToUpper)
 			.Text(FText::FromString(TEXT("Effect Controls")))
-			.ColorAndOpacity(FLinearColor(FAVCColors::Foreground))
+			.ColorAndOpacity(FLinearColor(FAVCColors::Dim))
 		]
 		+ SVerticalBox::Slot()
 		.AutoHeight()
-		.Padding(10.0f, 8.0f, 10.0f, 0.0f)
+		.Padding(14.0f, 8.0f, 14.0f, 0.0f)
 		[
 			BuildEffectTabs()
 		]
 		+ SVerticalBox::Slot()
 		.AutoHeight()
-		.Padding(10.0f, 10.0f, 10.0f, 0.0f)
+		[
+			AVCDivider(false)
+		]
+		+ SVerticalBox::Slot()
+		.AutoHeight()
+		.Padding(14.0f, 8.0f, 14.0f, 0.0f)
 		[
 			BuildEffectSliders()
 		]
 		// Upper half: controls
 		+ SVerticalBox::Slot()
-		.FillHeight(1.0f)
+		.AutoHeight()
 		[
 		SNew(SBox)
 		.Padding(10.0f)
@@ -479,13 +691,16 @@ void Controller_UI::Construct(const FArguments& InArgs)
 			.Padding(0.0f, 0.0f, 0.0f, 4.0f)
 			[
 				SNew(STextBlock)
+				.Font(AVCLabelFont())
+				.TransformPolicy(ETextTransformPolicy::ToUpper)
 				.Text(FText::FromString(TEXT("Particle Size")))
-				.ColorAndOpacity(FLinearColor(FAVCColors::Foreground))
+				.ColorAndOpacity(FLinearColor(FAVCColors::Dim))
 			]
 			+ SVerticalBox::Slot()
 			.AutoHeight()
 			[
 				SNew(SSpinBox<float>)
+					.Font(FAVCFonts::Get())
 				.MinSliderValue(0.0f)
 				.MaxSliderValue(100.0f)
 				.Delta(0.1f)
@@ -495,95 +710,152 @@ void Controller_UI::Construct(const FArguments& InArgs)
 			]
 		]
 		]
-		// Wind button above the mouse pad
+		// Divider above the trail pad section
 		+ SVerticalBox::Slot()
 		.AutoHeight()
-		.Padding(10.0f, 0.0f, 10.0f, 0.0f)
 		[
-			SNew(SHorizontalBox)
-			+ SHorizontalBox::Slot()
-			.AutoWidth()
-			.VAlign(VAlign_Center)
-			[
-				SNew(STextBlock)
-				.Text(FText::FromString(TEXT("Wind")))
-				.ColorAndOpacity(FLinearColor(FAVCColors::Foreground))
-			]
-			+ SHorizontalBox::Slot()
-			.FillWidth(1.0f)
-			.VAlign(VAlign_Center)
-			.Padding(8.0f, 0.0f, 0.0f, 0.0f)
-			[
-				// Opaque background so each new value fully replaces the previous one.
-				SNew(SBorder)
-				.BorderImage(FCoreStyle::Get().GetBrush("WhiteBrush"))
-				.BorderBackgroundColor(FLinearColor(FAVCColors::Background))
-				.Padding(0.0f)
-				[
-					SNew(STextBlock)
-					.ColorAndOpacity(FLinearColor(FAVCColors::Foreground))
-					.Text_Lambda([this]()
-					{
-						return FText::FromString(FString::Printf(TEXT("(%.1f, %.1f)"), mousePadVal.X, mousePadVal.Y));
-					})
-				]
-			]
+			AVCDivider(false)
 		]
 		// Lower half: mouse input pad
 		+ SVerticalBox::Slot()
 		.FillHeight(1.0f)
-		.Padding(10.0f)
+		.Padding(14.0f, 10.0f, 14.0f, 14.0f)
 		[
-			SNew(SMousePad)
-			.OnPositionChanged(this, &Controller_UI::OnMousePadPositionChanged)
+			SNew(SHorizontalBox)
+			// Effect color picker
+			+ SHorizontalBox::Slot()
+			.AutoWidth()
+			.Padding(0.0f, 0.0f, 10.0f, 0.0f)
+			[
+				SNew(SVerticalBox)
+				+ SVerticalBox::Slot()
+				.AutoHeight()
+				.Padding(0.0f, 0.0f, 0.0f, 6.0f)
+				[
+					SNew(STextBlock)
+					.Font(AVCLabelFont())
+					.TransformPolicy(ETextTransformPolicy::ToUpper)
+					.Text(FText::FromString(TEXT("Effect Color")))
+					.ColorAndOpacity(FLinearColor(FAVCColors::Dim))
+				]
+				+ SVerticalBox::Slot()
+				.AutoHeight()
+				[
+					SNew(SBox)
+					.WidthOverride(120.0f)
+					.HeightOverride(120.0f)
+					[
+						SNew(SAVCColorPicker)
+						.InitialColor(EffectColor)
+						.OnColorChanged_Lambda([this](FLinearColor NewColor) { EffectColor = NewColor; })
+					]
+				]
+				+ SVerticalBox::Slot()
+				.AutoHeight()
+				.Padding(0.0f, 8.0f, 0.0f, 0.0f)
+				[
+					SNew(SBox)
+					.WidthOverride(120.0f)
+					.HeightOverride(24.0f)
+					[
+						SNew(SBorder)
+						.BorderImage_Lambda([this]() -> const FSlateBrush*
+						{
+							EffectColorBrush = FSlateRoundedBoxBrush(EffectColor, 3.0f, FLinearColor(FAVCColors::Border), 1.0f);
+							return &EffectColorBrush;
+						})
+					]
+				]
+			]
+			+ SHorizontalBox::Slot()
+			.FillWidth(1.0f)
+			[
+				SNew(SVerticalBox)
+				// Wind label and value above the left of the trail pad
+				+ SVerticalBox::Slot()
+				.AutoHeight()
+				.HAlign(HAlign_Left)
+				.Padding(0.0f, 0.0f, 0.0f, 6.0f)
+				[
+					SNew(SHorizontalBox)
+					+ SHorizontalBox::Slot()
+					.AutoWidth()
+					.VAlign(VAlign_Center)
+					[
+						SNew(STextBlock)
+						.Font(AVCLabelFont())
+						.TransformPolicy(ETextTransformPolicy::ToUpper)
+						.Text(FText::FromString(TEXT("Wind")))
+						.ColorAndOpacity(FLinearColor(FAVCColors::Dim))
+					]
+					+ SHorizontalBox::Slot()
+					.AutoWidth()
+					.VAlign(VAlign_Center)
+					.Padding(8.0f, 0.0f, 0.0f, 0.0f)
+					[
+						// Opaque background so each new value fully replaces the previous one.
+						SNew(SBorder)
+						.BorderImage(FCoreStyle::Get().GetBrush("WhiteBrush"))
+						.BorderBackgroundColor(FLinearColor(FAVCColors::Background))
+						.Padding(0.0f)
+						[
+							SNew(STextBlock)
+							.Font(FAVCFonts::Get(8))
+							.ColorAndOpacity(FLinearColor(FAVCColors::Dimmer))
+							.Text_Lambda([this]()
+							{
+								return FText::FromString(FString::Printf(TEXT("(%.1f, %.1f)"), mousePadVal.X, mousePadVal.Y));
+							})
+						]
+					]
+				]
+				+ SVerticalBox::Slot()
+				.FillHeight(1.0f)
+				[
+					SNew(SMousePad)
+					.OnPositionChanged(this, &Controller_UI::OnMousePadPositionChanged)
+				]
+			]
 		]
 		]
-		// Overlay triggers: bottom fifth of the window height
+		// Overlay triggers: sized to content so the bottom margin is always visible
 		+ SVerticalBox::Slot()
-		.FillHeight(1.0f)
+		.AutoHeight()
+		.Padding(0.0f, 0.0f, 0.0f, 10.0f)
 		[
 			SNew(SVerticalBox)
 			// Subtle divider above the section
 			+ SVerticalBox::Slot()
 			.AutoHeight()
-			.Padding(10.0f, 0.0f)
 			[
-				SNew(SBox)
-				.HeightOverride(1.0f)
-				[
-					SNew(SBorder)
-					.BorderImage(FCoreStyle::Get().GetBrush("WhiteBrush"))
-					.BorderBackgroundColor(FLinearColor(FAVCColors::Border))
-				]
+				AVCDivider(false)
 			]
 			+ SVerticalBox::Slot()
 			.AutoHeight()
-			.Padding(10.0f, 10.0f, 10.0f, 0.0f)
+			.Padding(14.0f, 14.0f, 14.0f, 0.0f)
 			[
 				SNew(STextBlock)
+				.Font(AVCLabelFont())
+				.TransformPolicy(ETextTransformPolicy::ToUpper)
 				.Text(FText::FromString(TEXT("Overlay Triggers")))
-				.ColorAndOpacity(FLinearColor(FAVCColors::Foreground))
+				.ColorAndOpacity(FLinearColor(FAVCColors::Dim))
 			]
 			+ SVerticalBox::Slot()
-			.FillHeight(1.0f)
-			.Padding(10.0f, 8.0f, 10.0f, 10.0f)
+			.AutoHeight()
+			.Padding(14.0f, 8.0f, 14.0f, 14.0f)
 			[
 				BuildOverlayTriggers()
 			]
 		]
 		]
 		// Right column: last quarter of the window width
-		+ SHorizontalBox::Slot()
-		.FillWidth(1.0f)
-		.Padding(10.0f)
+		+ SSplitter::Slot()
+		.Value(1.0f)
 		[
-			SNew(SVerticalBox)
-			+ SVerticalBox::Slot()
-			.AutoHeight()
+			SNew(SBox)
+			.Padding(16.0f, 16.0f)
 			[
-				SNew(STextBlock)
-				.Text(FText::FromString(TEXT("Input Output")))
-				.ColorAndOpacity(FLinearColor(FAVCColors::Foreground))
+				SNew(IO_Widget)
 			]
 		]
 		]
@@ -598,13 +870,13 @@ TSharedRef<SWidget> Controller_UI::BuildOverlayTriggers()
 	static const FColor Colors[] = { FAVCColors::Cyan, FAVCColors::Blue, FAVCColors::Purple, FAVCColors::Fuchsia };
 
 	// Unselected: Background fill, subtle Border outline. Selected: thicker outline in the button's color.
-	static const FSlateRoundedBoxBrush NormalBrush(FLinearColor(FAVCColors::Background), 6.0f, FLinearColor(FAVCColors::Border), 0.75f);
+	static const FSlateRoundedBoxBrush NormalBrush(FLinearColor(FAVCColors::Card), 3.0f, FLinearColor(FAVCColors::Border), 1.0f);
 	static const FSlateRoundedBoxBrush SelectedBrushes[] =
 	{
-		FSlateRoundedBoxBrush(FLinearColor(FAVCColors::Background), 6.0f, FLinearColor(Colors[0]), 1.5f),
-		FSlateRoundedBoxBrush(FLinearColor(FAVCColors::Background), 6.0f, FLinearColor(Colors[1]), 1.5f),
-		FSlateRoundedBoxBrush(FLinearColor(FAVCColors::Background), 6.0f, FLinearColor(Colors[2]), 1.5f),
-		FSlateRoundedBoxBrush(FLinearColor(FAVCColors::Background), 6.0f, FLinearColor(Colors[3]), 1.5f),
+		FSlateRoundedBoxBrush(FLinearColor(FAVCColors::Card), 3.0f, FLinearColor(Colors[0]), 1.0f),
+		FSlateRoundedBoxBrush(FLinearColor(FAVCColors::Card), 3.0f, FLinearColor(Colors[1]), 1.0f),
+		FSlateRoundedBoxBrush(FLinearColor(FAVCColors::Card), 3.0f, FLinearColor(Colors[2]), 1.0f),
+		FSlateRoundedBoxBrush(FLinearColor(FAVCColors::Card), 3.0f, FLinearColor(Colors[3]), 1.0f),
 	};
 
 	TSharedRef<SHorizontalBox> Row = SNew(SHorizontalBox);
@@ -641,9 +913,11 @@ TSharedRef<SWidget> Controller_UI::BuildOverlayTriggers()
 				})
 				.HAlign(HAlign_Center)
 				.VAlign(VAlign_Center)
-				.Padding(FMargin(10.0f, 3.0f))
+				.Padding(FMargin(10.0f, 7.0f))
 				[
 					SNew(STextBlock)
+					.Font(AVCLabelFont(7))
+					.TransformPolicy(ETextTransformPolicy::ToUpper)
 					.Text(FText::FromString(Names[Index]))
 					.ColorAndOpacity(FLinearColor(Colors[Index]))
 				]
@@ -651,12 +925,13 @@ TSharedRef<SWidget> Controller_UI::BuildOverlayTriggers()
 		];
 	}
 
-	static const FSlateRoundedBoxBrush OverlayButtonBrush(FLinearColor(FAVCColors::Fuchsia), 6.0f);
+	static const FSlateRoundedBoxBrush OverlayButtonBrush(FLinearColor(FAVCColors::Fuchsia), 3.0f);
+	static const FSlateRoundedBoxBrush OverlayButtonFlashBrush(FLinearColor(FAVCColors::Foreground), 3.0f);
 
-	static const FSlateRoundedBoxBrush ToggleTrackBrush(FLinearColor(FAVCColors::Background), 6.0f, FLinearColor(FAVCColors::Border), 1.0f);
-	static const FSlateRoundedBoxBrush ToggleWhiteBrush(FLinearColor(FAVCColors::Foreground), 4.0f);
-	static const FSlateRoundedBoxBrush ToggleBlackBrush(FLinearColor::Black, 4.0f, FLinearColor(FAVCColors::Border), 1.0f);
-	static const FSlateRoundedBoxBrush ToggleOffBrush(FLinearColor::Transparent, 4.0f);
+	static const FSlateRoundedBoxBrush ToggleTrackBrush(FLinearColor(FAVCColors::Card), 3.0f, FLinearColor(FAVCColors::Border), 1.0f);
+	static const FSlateRoundedBoxBrush ToggleWhiteBrush(FLinearColor(FAVCColors::Foreground), 2.0f);
+	static const FSlateRoundedBoxBrush ToggleBlackBrush(FLinearColor(FAVCColors::Background), 2.0f, FLinearColor(FAVCColors::Border), 1.0f);
+	static const FSlateRoundedBoxBrush ToggleOffBrush(FLinearColor::Transparent, 2.0f);
 
 	return SNew(SVerticalBox)
 		+ SVerticalBox::Slot()
@@ -688,6 +963,7 @@ TSharedRef<SWidget> Controller_UI::BuildOverlayTriggers()
 							.Padding(FMargin(8.0f, 2.0f))
 							[
 								SNew(STextBlock)
+								.Font(AVCLabelFont(7))
 								.Text(FText::FromString(TEXT("W")))
 								.ColorAndOpacity_Lambda([this]()
 								{
@@ -703,10 +979,11 @@ TSharedRef<SWidget> Controller_UI::BuildOverlayTriggers()
 							.Padding(FMargin(8.0f, 2.0f))
 							[
 								SNew(STextBlock)
+								.Font(AVCLabelFont(7))
 								.Text(FText::FromString(TEXT("B")))
 								.ColorAndOpacity_Lambda([this]()
 								{
-									return FSlateColor(bOverlayBlack ? FLinearColor(FAVCColors::Foreground) : FLinearColor(FAVCColors::Dimmer));
+									return FSlateColor(bOverlayBlack ? FLinearColor(FAVCColors::Dim) : FLinearColor(FAVCColors::Dimmer));
 								})
 							]
 						]
@@ -725,8 +1002,10 @@ TSharedRef<SWidget> Controller_UI::BuildOverlayTriggers()
 		.Padding(0.0f, 10.0f, 0.0f, 4.0f)
 		[
 			SNew(STextBlock)
+			.Font(AVCLabelFont())
+			.TransformPolicy(ETextTransformPolicy::ToUpper)
 			.Text(FText::FromString(TEXT("Text Overlay")))
-			.ColorAndOpacity(FLinearColor(FAVCColors::Foreground))
+			.ColorAndOpacity(FLinearColor(FAVCColors::Dim))
 		]
 		+ SVerticalBox::Slot()
 		.AutoHeight()
@@ -746,6 +1025,7 @@ TSharedRef<SWidget> Controller_UI::BuildOverlayTriggers()
 					.WidthOverride(80.0f)
 					[
 						SNew(SSpinBox<float>)
+							.Font(FAVCFonts::Get())
 						.MinValue(0.1f)
 						.MaxValue(4.0f)
 						.MinSliderValue(0.1f)
@@ -763,16 +1043,25 @@ TSharedRef<SWidget> Controller_UI::BuildOverlayTriggers()
 					SNew(SButton)
 					.ButtonStyle(&FCoreStyle::Get().GetWidgetStyle<FButtonStyle>("NoBorder"))
 					.ContentPadding(0.0f)
-					.OnClicked_Lambda([]() { return FReply::Handled(); })
+					.OnClicked_Lambda([this]()
+					{
+						OverlayButtonFlashTime = FSlateApplication::Get().GetCurrentTime();
+						return FReply::Handled();
+					})
 					[
 						SNew(SBorder)
-						.BorderImage(&OverlayButtonBrush)
+						.BorderImage_Lambda([this]() -> const FSlateBrush*
+						{
+							return FSlateApplication::Get().GetCurrentTime() - OverlayButtonFlashTime < 0.15 ? &OverlayButtonFlashBrush : &OverlayButtonBrush;
+						})
 						.HAlign(HAlign_Center)
-						.Padding(FMargin(10.0f, 3.0f))
+						.Padding(FMargin(10.0f, 6.0f))
 						[
 							SNew(STextBlock)
+							.Font(AVCLabelFont(7))
+							.TransformPolicy(ETextTransformPolicy::ToUpper)
 							.Text(FText::FromString(TEXT("Overlay")))
-							.ColorAndOpacity(FLinearColor(FAVCColors::Foreground))
+							.ColorAndOpacity(FLinearColor(FAVCColors::Background))
 						]
 					]
 				]
@@ -782,9 +1071,11 @@ TSharedRef<SWidget> Controller_UI::BuildOverlayTriggers()
 			.FillWidth(1.0f)
 			[
 				SNew(SEditableTextBox)
+					.Font(FAVCFonts::Get())
 				.HintText(FText::FromString(TEXT("Enter display text...")))
 				.ForegroundColor(FLinearColor(FAVCColors::Foreground))
 				.BackgroundColor(FLinearColor(FAVCColors::Card))
+				.Padding(FMargin(10.0f, 7.0f))
 				.OnTextChanged_Lambda([this](const FText& NewText) { OverlayText = NewText.ToString(); })
 			]
 		];
@@ -793,7 +1084,7 @@ TSharedRef<SWidget> Controller_UI::BuildOverlayTriggers()
 TSharedRef<SWidget> Controller_UI::BuildEffectSliders()
 {
 	// Card behind each slider: Card fill, subtle Border outline, slightly rounded corners.
-	static const FSlateRoundedBoxBrush EffectSliderCardBrush(FLinearColor(FAVCColors::Card), 6.0f, FLinearColor(FAVCColors::Border), 1.0f);
+	static const FSlateRoundedBoxBrush EffectSliderCardBrush(FLinearColor(FAVCColors::Card), 4.0f, FLinearColor(FAVCColors::Border), 1.0f);
 
 	const FColor FillColors[] = { FAVCColors::Cyan, FAVCColors::Blue, FAVCColors::Blue, FAVCColors::Purple, FAVCColors::Purple, FAVCColors::Fuchsia };
 	constexpr int32 NumColumns = 3;
@@ -812,7 +1103,7 @@ TSharedRef<SWidget> Controller_UI::BuildEffectSliders()
 		[
 			SNew(SBorder)
 			.BorderImage(&EffectSliderCardBrush)
-			.Padding(FMargin(10.0f, 2.0f))
+			.Padding(FMargin(14.0f, 10.0f))
 			[
 				SNew(SAVCSlider)
 				.FillColor(FLinearColor(FillColors[Index]))
@@ -835,11 +1126,11 @@ TSharedRef<SWidget> Controller_UI::BuildEffectTabs()
 
 		TabBar->AddSlot()
 		.AutoWidth()
-		.Padding(0.0f, 0.0f, 16.0f, 0.0f)
+		.Padding(0.0f, 0.0f, 26.0f, 0.0f)
 		[
 			SNew(SButton)
 			.ButtonStyle(&FCoreStyle::Get().GetWidgetStyle<FButtonStyle>("NoBorder"))
-			.ContentPadding(FMargin(0.0f, 2.0f))
+			.ContentPadding(FMargin(6.0f, 6.0f, 6.0f, 0.0f))
 			.OnClicked_Lambda([this, Index]() { SelectedEffectTab = Index; return FReply::Handled(); })
 			[
 				SNew(SVerticalBox)
@@ -847,16 +1138,18 @@ TSharedRef<SWidget> Controller_UI::BuildEffectTabs()
 				.AutoHeight()
 				[
 					SNew(STextBlock)
+					.Font(AVCLabelFont())
+					.TransformPolicy(ETextTransformPolicy::ToUpper)
 					.Text(FText::FromString(TabNames[Index]))
 					.ColorAndOpacity_Lambda([IsSelected]()
 					{
-						return FSlateColor(FLinearColor(IsSelected() ? FAVCColors::Cyan : FAVCColors::Foreground));
+						return FSlateColor(FLinearColor(IsSelected() ? FAVCColors::Cyan : FAVCColors::Dim));
 					})
 				]
 				// Underline shown only for the selected tab
 				+ SVerticalBox::Slot()
 				.AutoHeight()
-				.Padding(0.0f, 2.0f, 0.0f, 0.0f)
+				.Padding(-6.0f, 8.0f, -6.0f, 0.0f)
 				[
 					SNew(SBox)
 					.HeightOverride(2.0f)

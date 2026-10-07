@@ -4,8 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "Widgets/SCompoundWidget.h"
-
-class UNiagaraComponent;
+#include "NiagaraComponent.h"
 
 /** AVC color palette. */
 class AVC_API FAVCColors
@@ -26,6 +25,14 @@ public:
 	static inline const FColor Purple     = FColor(0x70, 0x30, 0xF0);
 	static inline const FColor Fuchsia    = FColor(0xE0, 0x18, 0xC8);
 	static inline const FColor Green      = FColor(0x00, 0xFF, 0x88);
+};
+
+/** AVC UI font. */
+class AVC_API FAVCFonts
+{
+public:
+	/** Returns the AVC font (Content/JetBrainsMono-VariableFont_wght.ttf) at the given size. */
+	static FSlateFontInfo Get(int32 Size = 10);
 };
 
 /**
@@ -82,6 +89,9 @@ private:
 	/** Time the Flash trigger was last clicked; its outline highlights briefly afterwards. */
 	double FlashTriggerTime = -1000.0;
 
+	/** Time the Overlay button was last clicked; it flashes white briefly afterwards. */
+	double OverlayButtonFlashTime = -1000.0;
+
 	/** Number box value next to the text overlay (0.1 - 4). */
 	float OverlayValue = 1.0f;
 
@@ -99,6 +109,12 @@ private:
 
 	/** Called by the mouse pad whenever the drawing position changes; stores and prints it in mousePadVal. */
 	void OnMousePadPositionChanged(const FVector2D& NewPosition, const FVector2D& NormalizedPosition);
+
+	/** Color selected in the Effect Color wheel. */
+	FLinearColor EffectColor = FLinearColor::White;
+
+	/** Brush for the rounded rectangle showing EffectColor. */
+	FSlateBrush EffectColorBrush;
 
 	/** Wind speed magnitude at the edges of the mouse pad (Y and Z axes). */
 	static constexpr double MaxPadWindSpeed = 1000.0;

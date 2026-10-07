@@ -15,27 +15,102 @@
 #include "NiagaraComponent.h"
 #include "NiagaraSystem.h"
 #include "UObject/UObjectIterator.h"
-
-#if PLATFORM_WINDOWS
-#include "Windows/AllowWindowsPlatformTypes.h"
-#include <Windows.h>
-#include <dwmapi.h>
-#include "Windows/HideWindowsPlatformTypes.h"
 #include "IImageWrapper.h"
 #include "IImageWrapperModule.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
+#include "Brushes/SlateDynamicImageBrush.h"
+#include "Widgets/SOverlay.h"
+#include "Widgets/SBoxPanel.h"
+#include "Widgets/Images/SImage.h"
+#include "Widgets/Layout/SScaleBox.h"
+#include "Widgets/Layout/SBorder.h"
+#include "Widgets/Layout/SBox.h"
+#include "Styling/CoreStyle.h"
+#include "Widgets/Input/SButton.h"
+#include "Widgets/Text/STextBlock.h"
+#include "Widgets/SCompoundWidget.h"
 
-// Builds a window icon from Source/AVC/avc_logo.png (cached after first load).
-static HICON LoadAVCLogoIcon()
+// Wraps content and reports a fixed window zone so Slate can drag the window by its
+// custom title bar while still letting the caption buttons receive clicks.
+class SAVCWindowZone : public SCompoundWidget
 {
-	static HICON CachedIcon = nullptr;
-	if (CachedIcon)
+public:
+	SLATE_BEGIN_ARGS(SAVCWindowZone) : _Zone(EWindowZone::TitleBar) {}
+		SLATE_ARGUMENT(EWindowZone::Type, Zone)
+		SLATE_DEFAULT_SLOT(FArguments, Content)
+	SLATE_END_ARGS()
+
+	void Construct(const FArguments& InArgs)
 	{
-		return CachedIcon;
+		Zone = InArgs._Zone;
+		ChildSlot[InArgs._Content.Widget];
 	}
 
-	const FString LogoPath = FPaths::Combine(FPaths::GameSourceDir(), TEXT("AVC/avc_logo.png"));
+	virtual EWindowZone::Type GetWindowZoneOverride() const override
+	{
+		return Zone;
+	}
+
+	// Title bar zones drag the owning window directly.
+	virtual FReply OnMouseButtonDown(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent) override
+	{
+		if (Zone == EWindowZone::TitleBar && MouseEvent.GetEffectingButton() == EKeys::LeftMouseButton)
+		{
+			TSharedPtr<SWindow> Window = FSlateApplication::Get().FindWidgetWindow(AsShared());
+			if (Window.IsValid())
+			{
+				bDragging = true;
+				DragOffset = MouseEvent.GetScreenSpacePosition() - Window->GetPositionInScreen();
+				return FReply::Handled().CaptureMouse(AsShared());
+			}
+		}
+		return FReply::Unhandled();
+	}
+
+	virtual FReply OnMouseMove(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent) override
+	{
+		if (bDragging && HasMouseCapture())
+		{
+			TSharedPtr<SWindow> Window = FSlateApplication::Get().FindWidgetWindow(AsShared());
+			if (Window.IsValid())
+			{
+				if (Window->IsWindowMaximized())
+				{
+					Window->Restore();
+				}
+				Window->MoveWindowTo(MouseEvent.GetScreenSpacePosition() - DragOffset);
+			}
+			return FReply::Handled();
+		}
+		return FReply::Unhandled();
+	}
+
+	virtual FReply OnMouseButtonUp(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent) override
+	{
+		if (bDragging && MouseEvent.GetEffectingButton() == EKeys::LeftMouseButton)
+		{
+			bDragging = false;
+			return FReply::Handled().ReleaseMouseCapture();
+		}
+		return FReply::Unhandled();
+	}
+
+	virtual void OnMouseCaptureLost(const FCaptureLostEvent& CaptureLostEvent) override
+	{
+		bDragging = false;
+	}
+
+private:
+	EWindowZone::Type Zone = EWindowZone::TitleBar;
+	bool bDragging = false;
+	FVector2D DragOffset = FVector2D::ZeroVector;
+};
+
+// Creates a brush from Source/AVC/avc_logo.png sized to the image's native dimensions.
+static TSharedPtr<FSlateDynamicImageBrush> CreateAVCLogoBrush()
+{
+	const FString LogoPath = FPaths::ConvertRelativePathToFull(FPaths::Combine(FPaths::GameSourceDir(), TEXT("AVC/avc_logo.png")));
 	TArray<uint8> FileData;
 	if (!FFileHelper::LoadFileToArray(FileData, *LogoPath))
 	{
@@ -45,56 +120,24 @@ static HICON LoadAVCLogoIcon()
 
 	IImageWrapperModule& ImageWrapperModule = FModuleManager::LoadModuleChecked<IImageWrapperModule>(TEXT("ImageWrapper"));
 	TSharedPtr<IImageWrapper> ImageWrapper = ImageWrapperModule.CreateImageWrapper(EImageFormat::PNG);
-	TArray<uint8> RawData;
-	if (!ImageWrapper.IsValid()
-		|| !ImageWrapper->SetCompressed(FileData.GetData(), FileData.Num())
-		|| !ImageWrapper->GetRaw(ERGBFormat::BGRA, 8, RawData))
+	if (!ImageWrapper.IsValid() || !ImageWrapper->SetCompressed(FileData.GetData(), FileData.Num()))
 	{
 		return nullptr;
 	}
 
-	const int32 Width = ImageWrapper->GetWidth();
-	const int32 Height = ImageWrapper->GetHeight();
-
-	BITMAPINFO BitmapInfo = {};
-	BitmapInfo.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-	BitmapInfo.bmiHeader.biWidth = Width;
-	BitmapInfo.bmiHeader.biHeight = -Height; // top-down
-	BitmapInfo.bmiHeader.biPlanes = 1;
-	BitmapInfo.bmiHeader.biBitCount = 32;
-	BitmapInfo.bmiHeader.biCompression = BI_RGB;
-
-	void* Bits = nullptr;
-	HDC ScreenDC = ::GetDC(nullptr);
-	HBITMAP ColorBitmap = ::CreateDIBSection(ScreenDC, &BitmapInfo, DIB_RGB_COLORS, &Bits, nullptr, 0);
-	::ReleaseDC(nullptr, ScreenDC);
-	if (!ColorBitmap || !Bits)
-	{
-		return nullptr;
-	}
-	FMemory::Memcpy(Bits, RawData.GetData(), Width * Height * 4);
-
-	HBITMAP MaskBitmap = ::CreateBitmap(Width, Height, 1, 1, nullptr);
-	ICONINFO IconInfo = {};
-	IconInfo.fIcon = 1;
-	IconInfo.hbmMask = MaskBitmap;
-	IconInfo.hbmColor = ColorBitmap;
-	CachedIcon = ::CreateIconIndirect(&IconInfo);
-
-	::DeleteObject(ColorBitmap);
-	::DeleteObject(MaskBitmap);
-	return CachedIcon;
+	return MakeShared<FSlateDynamicImageBrush>(FName(*LogoPath),
+		FVector2D(ImageWrapper->GetWidth(), ImageWrapper->GetHeight()));
 }
+
+#if PLATFORM_WINDOWS
+#include "Windows/AllowWindowsPlatformTypes.h"
+#include <Windows.h>
+#include <dwmapi.h>
+#include "Windows/HideWindowsPlatformTypes.h"
 
 static void ApplyAVCLogo(HWND Hwnd)
 {
-	if (HICON Icon = LoadAVCLogoIcon())
-	{
-		::SendMessageW(Hwnd, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(Icon));
-		::SendMessageW(Hwnd, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(Icon));
-	}
-
-	// No title text in the window bar.
+	// No title text
 	::SetWindowTextW(Hwnd, L"");
 
 	// Title bar color = FAVCColors::Background (DWMWA_CAPTION_COLOR, Windows 11+).
@@ -191,21 +234,146 @@ private:
 			const FVector2D ControllerSize(ScreenWidth * 2 / 3, ScreenHeight * 2 / 3);
 			const FVector2D ControllerPos(ScreenWidth / 3, FMath::Max(0, (ScreenHeight - ScreenHeight * 2 / 3) / 2));
 
-			// Create the window at its final geometry, but keep it hidden until the
+			if (!LogoBrush.IsValid())
+			{
+				LogoBrush = CreateAVCLogoBrush();
+			}
+
+			const float CaptionButtonHeight = 28.0f;
+			const float LogoHeight = 29.0f;
+			const float LogoInset = 8.0f;
+			float LogoWidth = LogoHeight;
+			if (LogoBrush.IsValid() && LogoBrush->ImageSize.Y > 0.0)
+			{
+				LogoWidth = LogoHeight * static_cast<float>(LogoBrush->ImageSize.X / LogoBrush->ImageSize.Y);
+			}
+
+			TWeakPtr<SWindow>* WindowRef = &AVCWindow;
+			auto MakeCaptionButton = [CaptionButtonHeight](const FString& Label, TFunction<void()> Action) -> TSharedRef<SWidget>
+			{
+				return SNew(SAVCWindowZone)
+					.Zone(EWindowZone::ClientArea)
+					[
+						SNew(SBox)
+						.WidthOverride(48.0f)
+						.HeightOverride(CaptionButtonHeight)
+						[
+						SNew(SButton)
+						.ButtonColorAndOpacity(FLinearColor(FAVCColors::Background))
+						.ContentPadding(FMargin(0.0f))
+						.HAlign(HAlign_Center)
+						.VAlign(VAlign_Center)
+						.OnClicked_Lambda([Action]() { Action(); return FReply::Handled(); })
+						[
+							SNew(STextBlock)
+							.Font(FCoreStyle::GetDefaultFontStyle("Regular", 14))
+							.Text(FText::FromString(Label))
+							.ColorAndOpacity(FLinearColor(FAVCColors::Dim))
+						]
+						]
+					];
+			};
+
+			// Create the window at its final geometry,
 			// game window has been laid out so there is no initial popup/resize.
+			// The OS title bar is replaced by a custom one that contains the logo.
 			TSharedRef<SWindow> Window = SNew(SWindow)
 				.Title(FText::GetEmpty())
 				.ClientSize(ControllerSize)
 				.ScreenPosition(ControllerPos)
 				.AutoCenter(EAutoCenter::None)
 				.SizingRule(ESizingRule::UserSized)
-				.UseOSWindowBorder(true)
+				.MinWidth(320.0f)
+				.MinHeight(240.0f)
+				.UseOSWindowBorder(false)
+				.CreateTitleBar(false)
 				.HasCloseButton(true)
 				.SupportsMaximize(true)
 				.SupportsMinimize(true)
-				.IsTopmostWindow(true)
+				.IsTopmostWindow(false)
 				[
-					Core
+					// Custom title bar with the logo in the top-left (one tenth of the window height),
+					// with the controller UI below it.
+					SNew(SVerticalBox)
+					+ SVerticalBox::Slot()
+					.AutoHeight()
+					[
+						SNew(SAVCWindowZone)
+						.Zone(EWindowZone::TitleBar)
+						[
+							SNew(SBox)
+							.HeightOverride(LogoHeight + LogoInset * 2.0f)
+							[
+							SNew(SBorder)
+							.BorderImage(FCoreStyle::Get().GetBrush("WhiteBrush"))
+							.BorderBackgroundColor(FLinearColor(FAVCColors::Background))
+							.Padding(FMargin(LogoInset, 0.0f, LogoInset, 0.0f))
+							[
+								SNew(SHorizontalBox)
+								+ SHorizontalBox::Slot()
+								.FillWidth(1.0f)
+								.HAlign(HAlign_Left)
+								.VAlign(VAlign_Center)
+								[
+									// Size the logo explicitly from the image's aspect ratio so it is never stretched.
+									SNew(SBox)
+									.HeightOverride(LogoHeight)
+									.WidthOverride(LogoWidth)
+									.Visibility(EVisibility::HitTestInvisible)
+									[
+										SNew(SImage)
+										.Image(LogoBrush.Get())
+									]
+								]
+								+ SHorizontalBox::Slot()
+								.AutoWidth()
+								.VAlign(VAlign_Center)
+								.Padding(4.0f, 0.0f)
+								[
+									MakeCaptionButton(TEXT("-"), [WindowRef]() { if (TSharedPtr<SWindow> W = WindowRef->Pin()) { W->Minimize(); } })
+								]
+								+ SHorizontalBox::Slot()
+								.AutoWidth()
+								.VAlign(VAlign_Center)
+								.Padding(4.0f, 0.0f)
+								[
+									MakeCaptionButton(TEXT("\u25A1"), [WindowRef]()
+									{
+										if (TSharedPtr<SWindow> W = WindowRef->Pin())
+										{
+											if (W->IsWindowMaximized()) { W->Restore(); } else { W->Maximize(); }
+										}
+									})
+								]
+								+ SHorizontalBox::Slot()
+								.AutoWidth()
+								.VAlign(VAlign_Center)
+								.Padding(4.0f, 0.0f)
+								[
+									MakeCaptionButton(TEXT("\u2715"), []() { FPlatformMisc::RequestExit(false); })
+								]
+							]
+							]
+						]
+					]
+					+ SVerticalBox::Slot()
+					.AutoHeight()
+					[
+						// Thin line below the top bar.
+						SNew(SBox)
+						.HeightOverride(1.0f)
+						[
+							SNew(SBorder)
+							.BorderImage(FCoreStyle::Get().GetBrush("WhiteBrush"))
+							.BorderBackgroundColor(FLinearColor(FAVCColors::Border))
+							.Padding(0.0f)
+						]
+					]
+					+ SVerticalBox::Slot()
+					.FillHeight(1.0f)
+					[
+						Core
+					]
 				];
 
 			FSlateApplication::Get().AddWindow(Window, /*bShowImmediately*/ false);
@@ -235,7 +403,7 @@ private:
 			HWND Hwnd = static_cast<HWND>(NativeWindow->GetOSWindowHandle());
 			if (Hwnd)
 			{
-				::SetWindowPos(Hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+				::SetWindowPos(Hwnd, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
 				ApplyAVCLogo(Hwnd);
 			}
 		}
@@ -280,7 +448,7 @@ private:
 					if (GameHwnd)
 					{
 						LONG_PTR Style = ::GetWindowLongPtr(GameHwnd, GWL_STYLE);
-						Style |= (WS_CAPTION | WS_SYSMENU | WS_THICKFRAME);
+						Style |= (WS_CAPTION | WS_SYSMENU | WS_THICKFRAME | WS_MAXIMIZEBOX | WS_MINIMIZEBOX);
 						::SetWindowLongPtr(GameHwnd, GWL_STYLE, Style);
 						ApplyAVCLogo(GameHwnd);
 
@@ -306,7 +474,7 @@ private:
 							::DwmGetWindowAttribute(ControllerHwnd, DWMWA_EXTENDED_FRAME_BOUNDS, &ControllerVisible, sizeof(RECT));
 							const int32 ControllerLeftInset = ControllerVisible.left - ControllerRect.left;
 
-							::SetWindowPos(ControllerHwnd, HWND_TOPMOST,
+							::SetWindowPos(ControllerHwnd, HWND_TOP,
 								GameVisible.right - ControllerLeftInset, ControllerRect.top,
 								ControllerRect.right - ControllerRect.left, ControllerRect.bottom - ControllerRect.top,
 								SWP_NOACTIVATE);
@@ -374,6 +542,7 @@ private:
 	}
 
 	TWeakPtr<SWindow> AVCWindow;
+	TSharedPtr<FSlateDynamicImageBrush> LogoBrush;
 	TWeakPtr<Controller_UI> ControllerWidget;
 	TWeakObjectPtr<UNiagaraComponent> BlowingParticlesComponent;
 	FDelegateHandle EngineInitHandle;
