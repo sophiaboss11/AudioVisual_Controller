@@ -12,7 +12,7 @@ Saved/
 Build/
 
 # Ignore packaged builds (your Windows/AVC folder)
-Windows/
+/Windows/
 
 # Ignore Visual Studio
 .vs/
