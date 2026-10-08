@@ -10,7 +10,10 @@ public class AVC : ModuleRules
 	
 		PublicDependencyModuleNames.AddRange(new string[] { "Core", "CoreUObject", "Engine", "InputCore", "Niagara", "GameplayTags", "ImageWrapper" });
 
-		PrivateDependencyModuleNames.AddRange(new string[] {  });
+		PrivateDependencyModuleNames.AddRange(new string[] { "ApplicationCore" });
+
+		// zlib for JUCE core (GZIP/Zip streams)
+		AddEngineThirdPartyPrivateStaticDependencies(Target, "zlib");
 
 		// Uncomment if you are using Slate UI
 		PrivateDependencyModuleNames.AddRange(new string[] { "Slate", "SlateCore" });
